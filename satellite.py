@@ -3,12 +3,14 @@ import binascii
 from ftdi import *
 from PyQt4 import QtGui
 from PyQt4 import QtCore
+import Image
+import StringIO
 
 BAUDRATE = 38400
 FILENAME = 'satellite.log'
 LENGTH = 1024
-JPEGSTART = 'ffd8'
-JPEGEND = 'ffd9'
+JPEGSTART = binascii.unhexlify('ffd8')
+JPEGEND = binascii.unhexlify('ffd9')
 TITLE = 'Mamitterm'
 
 class MamiThread(QtCore.QThread):
@@ -22,30 +24,42 @@ class MamiThread(QtCore.QThread):
         self.logger.setLevel(logging.DEBUG)
     def run(self):
         self.buffer = ''
+        self.writing = False
         while self.running:
             temp = ' ' * LENGTH
             r = ftdi_read_data(self.ftdic, temp, LENGTH)
             if r > 0:
                 temp = temp[:r]
-                self.emit(QtCore.SIGNAL('readHex(QString)'), binascii.hexlify(temp))
-                self.buffer += temp
-            if self.buffer != '' and r == 0:
-                hexstr = binascii.hexlify(self.buffer)
-                start = hexstr.find(JPEGSTART)
-                end = hexstr.find(JPEGEND) + len(JPEGEND)
-                if start != -1 and end != -1:
-                    print start, end
-                    try:
-                        image = binascii.unhexlify(hexstr[start:end])
-                        f = open('hoge.jpg', 'w')
-                        f.write(image)
+                start = temp.find(JPEGSTART)
+                if start != -1:
+                    print 'Start'
+                    self.buffer = temp[start:]
+                    self.writing = True
+                elif self.writing:
+                    end = temp.find(JPEGEND)
+                    if end == -1:
+                        self.buffer += temp
+                    else:
+                        print 'End'
+                        data = (self.buffer + temp[:end + len(JPEGEND)]).replace(binascii.unhexlify('0d0a'), '')
+                        f = open('foo.jpg', 'w')
+                        f.write(data)
                         f.close()
-                        print "success"
-                    except TypeError:
-                        print "fail"
-                self.logger.debug(self.buffer)
-                self.emit(QtCore.SIGNAL('readText(QString)'), self.buffer.rstrip())
-                self.buffer = ''
+                        try:
+                            size = 160, 120
+                            image = Image.fromstring('RGB', size, data)
+                            image.save('bar.jpg')
+                        except ValueError, e:
+                            print e
+                        try:
+                            image = Image.open(StringIO.StringIO(data))
+                            image.save('baz.jpg')
+                        except IOError, e:
+                            print e
+                        self.writing = False
+                self.emit(QtCore.SIGNAL('readText(QString)'), temp.strip())
+                self.emit(QtCore.SIGNAL('readHex(QString)'), binascii.hexlify(temp))
+                self.logger.debug(temp)
 
 class Mamitterm(QtGui.QWidget):
     def __init__(self, ftdic):
@@ -83,6 +97,24 @@ class Mamitterm(QtGui.QWidget):
         ftdi_write_data(self.ftdic, text, size)
         self.line.setText('')
 
+    def keyPressEvent(self, event):
+        text = event.text()
+        if text == 'h':
+            c = 'z'
+        elif text == 'j':
+            c = 'v'
+        elif text == 'k':
+            c = 'c'
+        elif text == 'l':
+            c = 'x'
+        else:
+            return
+        string = c + chr(0x0d)
+        ftdi_write_data(self.ftdic, string, len(string))
+
+    def keyReleaseEvent(self, event):
+        pass
+
     def closeEvent(self, event):
         self.thread.running = False
         self.thread.quit()
@@ -94,7 +126,6 @@ def main():
     if ftdi_usb_open(ftdic, 0x0403, 0x6001) < 0:
         raise RuntimeError, 'open error'
     ftdi_set_baudrate(ftdic, BAUDRATE)
-    ftdi_read_data_set_chunksize(ftdic, LENGTH)
     app = QtGui.QApplication(sys.argv)
     mamitterm = Mamitterm(ftdic)
     mamitterm.show()
